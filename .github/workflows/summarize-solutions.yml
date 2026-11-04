@@ -1,0 +1,70 @@
+name: Summarize solutions
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**.py'
+      - '**.ipynb'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: summarize-solutions-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  summarize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Summarize
+        timeout-minutes: 13  # Leaves the Commit step time to save finished notes.
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_MODELS: ${{ vars.LLM_MODELS }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        # -P keeps solution files such as bisect.py from shadowing the stdlib and running with the key.
+        run: >-
+          python -P -c 'import runpy, sys; sys.path.append(".");
+          runpy.run_module("summarizer", run_name="__main__", alter_sys=True)'
+          --before "$BEFORE" --after "$AFTER"
+
+      # Pushes made with GITHUB_TOKEN do not trigger workflows, so no loop guard is needed.
+      - name: Commit
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          [ -d til ] || exit 0
+          git add til
+          git diff --cached --quiet && exit 0
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898583+github-actions[bot]@users.noreply.github.com'
+          git commit --quiet -m 'docs: summarize solutions'
+          # The helper reads the token from the environment, so it reaches neither disk nor argv.
+          auth='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
+          for delay in 5 10 20; do
+            git -c credential.helper="$auth" pull --quiet --rebase origin main &&
+              git -c credential.helper="$auth" push --quiet origin HEAD:main && exit 0
+            sleep "$delay"
+          done
+          exit 1
